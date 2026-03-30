@@ -1,0 +1,169 @@
+name: 'Setup AMXXPawn'
+description: >
+  Download the AMXXPawn compiler, cache it, and add it to PATH.
+  On Linux/macOS the stdlib include path is injected automatically
+  into every amxxpc call so you only need to pass project-specific -i flags.
+author: 'speedrun-16'
+
+inputs:
+  amxx-branch:
+    description: 'AMXX minor branch to download (1.9 or 1.10)'
+    required: false
+    default: '1.10'
+  build:
+    description: 'Git build number (example: 5467) or "latest" to resolve automatically'
+    required: false
+    default: 'latest'
+  plugin:
+    description: 'Path to the main .sma file to parse the plugin version from'
+    required: false
+    default: ''
+  version-define:
+    description: 'Name of the #define to read the version from (example: PLUGIN_VERSION). If omitted, looks for a version = "x.x.x" assignment instead.'
+    required: false
+    default: ''
+
+outputs:
+  build:
+    description: 'Resolved build number that was installed'
+    value: ${{ steps.resolve.outputs.build }}
+  scripting-path:
+    description: 'Absolute path to the scripting directory (contains amxxpc)'
+    value: ${{ steps.export.outputs.scripting-path }}
+  include-path:
+    description: 'Absolute path to the stdlib include directory'
+    value: ${{ steps.export.outputs.include-path }}
+  plugin-version:
+    description: 'Plugin version parsed from plugin (empty if plugin was not set)'
+    value: ${{ steps.parse-version.outputs.plugin-version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve build number
+      id: resolve
+      shell: bash
+      run: |
+        BRANCH="${{ inputs.amxx-branch }}"
+        BUILD="${{ inputs.build }}"
+
+        if [ "$BUILD" = "latest" ]; then
+          INDEX_URL="https://www.amxmodx.org/amxxdrop/${BRANCH}/"
+          echo "Resolving latest build from ${INDEX_URL} ..."
+          BUILD=$(curl -fsSL "$INDEX_URL" \
+            | grep -o "git[0-9]*-base-linux" \
+            | grep -o "[0-9]*" \
+            | sort -n | tail -1)
+          if [ -z "$BUILD" ]; then
+            echo "::error::Could not resolve latest build from ${INDEX_URL}"
+            exit 1
+          fi
+        fi
+
+        echo "Resolved build: ${BUILD}"
+        echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore compiler cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.amxxpawn/${{ inputs.amxx-branch }}-${{ steps.resolve.outputs.build }}
+        key: amxxpawn-${{ inputs.amxx-branch }}-${{ steps.resolve.outputs.build }}-${{ runner.os }}
+
+    - name: Download and extract
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        BRANCH="${{ inputs.amxx-branch }}"
+        BUILD="${{ steps.resolve.outputs.build }}"
+        BASE_URL="https://www.amxmodx.org/amxxdrop/${BRANCH}"
+        INSTALL_DIR="$HOME/.amxxpawn/${BRANCH}-${BUILD}"
+
+        mkdir -p "$INSTALL_DIR" "$RUNNER_TEMP/amxxpawn_extract"
+
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          URL="${BASE_URL}/amxmodx-${BRANCH}.0-git${BUILD}-base-windows.zip"
+          echo "Downloading ${URL} ..."
+          curl -fsSL -o "$RUNNER_TEMP/amxxpawn.zip" "$URL"
+          unzip -q "$RUNNER_TEMP/amxxpawn.zip" -d "$RUNNER_TEMP/amxxpawn_extract"
+        else
+          URL="${BASE_URL}/amxmodx-${BRANCH}.0-git${BUILD}-base-linux.tar.gz"
+          echo "Downloading ${URL} ..."
+          curl -fsSL -o "$RUNNER_TEMP/amxxpawn.tar.gz" "$URL"
+          tar -xzf "$RUNNER_TEMP/amxxpawn.tar.gz" -C "$RUNNER_TEMP/amxxpawn_extract"
+        fi
+
+        cp -r "$RUNNER_TEMP/amxxpawn_extract/addons/amxmodx/scripting/." "$INSTALL_DIR/"
+        chmod +x "$INSTALL_DIR/amxxpc" 2>/dev/null || true
+
+    - name: Install include-injecting wrapper (Linux / macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        BRANCH="${{ inputs.amxx-branch }}"
+        BUILD="${{ steps.resolve.outputs.build }}"
+        INSTALL_DIR="$HOME/.amxxpawn/${BRANCH}-${BUILD}"
+
+        # Skip if wrapper already present (restored from cache)
+        if [ ! -f "$INSTALL_DIR/amxxpc_orig" ]; then
+          mv "$INSTALL_DIR/amxxpc" "$INSTALL_DIR/amxxpc_orig"
+          printf '#!/bin/sh\nexec "%s/amxxpc_orig" -i"%s/include" "$@"\n' \
+            "$INSTALL_DIR" "$INSTALL_DIR" \
+            > "$INSTALL_DIR/amxxpc"
+          chmod +x "$INSTALL_DIR/amxxpc"
+          echo "Wrapper installed."
+        else
+          echo "Wrapper already present (cache hit)."
+        fi
+
+    - name: Add to PATH and export variables
+      id: export
+      shell: bash
+      run: |
+        BRANCH="${{ inputs.amxx-branch }}"
+        BUILD="${{ steps.resolve.outputs.build }}"
+        INSTALL_DIR="$HOME/.amxxpawn/${BRANCH}-${BUILD}"
+
+        echo "$INSTALL_DIR"                          >> "$GITHUB_PATH"
+        echo "AMXXPAWN_SCRIPTING=$INSTALL_DIR"       >> "$GITHUB_ENV"
+        echo "AMXXPAWN_INCLUDE=$INSTALL_DIR/include" >> "$GITHUB_ENV"
+
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          echo "LD_LIBRARY_PATH=${INSTALL_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+        fi
+
+        echo "scripting-path=$INSTALL_DIR"           >> "$GITHUB_OUTPUT"
+        echo "include-path=$INSTALL_DIR/include"     >> "$GITHUB_OUTPUT"
+
+        echo "AMXXPawn ${BRANCH} build ${BUILD} ready at: $INSTALL_DIR"
+
+    - name: Parse plugin version from file
+      id: parse-version
+      if: inputs.plugin != ''
+      shell: bash
+      env:
+        VERSION_FILE: ${{ inputs.plugin }}
+        DEFINE_NAME: ${{ inputs.version-define }}
+      run: |
+        if [ ! -f "$VERSION_FILE" ]; then
+          echo "::error::version-file not found: $VERSION_FILE"
+          exit 1
+        fi
+
+        if [ -n "$DEFINE_NAME" ]; then
+          VERSION=$(grep -E "#define[[:space:]]+${DEFINE_NAME}[[:space:]]" "$VERSION_FILE" \
+            | grep -oE '"[^"]+"|'"'"'[^'"'"']+'"'" \
+            | tr -d "\"'" | head -1)
+        else
+          VERSION=$(grep -E 'version[[:space:]]*=' "$VERSION_FILE" \
+            | grep -oE '"[^"]+"|'"'"'[^'"'"']+'"'" \
+            | tr -d "\"'" | head -1)
+        fi
+
+        if [ -z "$VERSION" ]; then
+          echo "::error::Could not parse version from $VERSION_FILE"
+          exit 1
+        fi
+
+        echo "Parsed plugin version: $VERSION"
+        echo "plugin-version=$VERSION" >> "$GITHUB_OUTPUT"
