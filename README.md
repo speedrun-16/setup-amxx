@@ -11,8 +11,7 @@ On **Linux and macOS** the stdlib include directory is injected automatically in
 
 - uses: speedrun-16/setup-amxx@main
   with:
-    amxx-branch: '1.10'
-    build: 'latest'
+    release-tag: 'latest'
 
 - name: Compile plugin
   run: |
@@ -23,8 +22,7 @@ On **Linux and macOS** the stdlib include directory is injected automatically in
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `amxx-branch` | no | `1.10` | AMXX minor branch to download (`1.9` or `1.10`) |
-| `build` | no | `latest` | Specific git build number or `latest` to resolve automatically |
+| `release-tag` | no | `latest` | Specific AMXX GitHub release tag or `latest` to resolve automatically |
 | `plugin` | no | | Path to the main `.sma` file to parse the plugin version from |
 | `version-define` | no | | `#define` name to read the version from (example: `PLUGIN_VERSION`). If omitted, looks for a `version = "x.x.x"` assignment |
 
@@ -32,7 +30,7 @@ On **Linux and macOS** the stdlib include directory is injected automatically in
 
 | Output | Description |
 |--------|-------------|
-| `build` | Resolved build number that was installed |
+| `release-tag` | Resolved GitHub release tag that was installed |
 | `scripting-path` | Absolute path to the scripting directory (contains `amxxpc`) |
 | `include-path` | Absolute path to the stdlib include directory |
 | `plugin-version` | Plugin version parsed from `plugin` (empty if `plugin` was not set) |
@@ -51,8 +49,7 @@ On **Linux and macOS** the stdlib include directory is injected automatically in
 - uses: speedrun-16/setup-amxx@main
   id: setup
   with:
-    amxx-branch: '1.10'
-    build: 'latest'
+    release-tag: 'latest'
     plugin: src/plugin.sma
     version-define: PLUGIN_VERSION   # reads: #define PLUGIN_VERSION "1.2.3"
 
@@ -61,20 +58,24 @@ On **Linux and macOS** the stdlib include directory is injected automatically in
 
 If `version-define` is omitted the action looks for a `version = "x.x.x"` assignment in the file instead.
 
-## Pinning to a specific build
+## Pinning to a specific release
 
 ```yaml
 - uses: speedrun-16/setup-amxx@main
   with:
-    amxx-branch: '1.10'
-    build: '5467'
+    release-tag: '1.10.0.5476'
 ```
 
-Pinning is recommended for reproducible builds. With `latest` the resolved build number is available in the `build` output if you need to log or cache it downstream.
+Pinning is recommended for reproducible builds. With `latest`, the resolved GitHub release tag is available in `release-tag`.
+
+Downloads are resolved from the official AMX Mod X GitHub releases, for example:
+
+```text
+https://github.com/alliedmodders/amxmodx/releases/download/1.10.0.5476/amxmodx-1.10.0-git5476-base-linux.tar.gz
+```
 
 ## Caching
 
 The compiler is cached between runs using `actions/cache`. \
-Cache key includes the branch, build number, and OS so different platforms never share a cache entry. \
+Cache key includes the release tag and OS so different platforms never share a cache entry. \
 Cache hit skips the download entirely.
-

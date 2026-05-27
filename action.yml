@@ -6,12 +6,8 @@ description: >
 author: 'speedrun-16'
 
 inputs:
-  amxx-branch:
-    description: 'AMXX minor branch to download (1.9 or 1.10)'
-    required: false
-    default: '1.10'
-  build:
-    description: 'Git build number (example: 5467) or "latest" to resolve automatically'
+  release-tag:
+    description: 'AMXX GitHub release tag (example: 1.10.0.5476) or "latest" to resolve automatically'
     required: false
     default: 'latest'
   plugin:
@@ -24,9 +20,9 @@ inputs:
     default: ''
 
 outputs:
-  build:
-    description: 'Resolved build number that was installed'
-    value: ${{ steps.resolve.outputs.build }}
+  release-tag:
+    description: 'Resolved GitHub release tag that was installed'
+    value: ${{ steps.resolve.outputs.release-tag }}
   scripting-path:
     description: 'Absolute path to the scripting directory (contains amxxpc)'
     value: ${{ steps.export.outputs.scripting-path }}
@@ -44,40 +40,53 @@ runs:
       id: resolve
       shell: bash
       run: |
-        BRANCH="${{ inputs.amxx-branch }}"
-        BUILD="${{ inputs.build }}"
+        RELEASE_TAG="${{ inputs.release-tag }}"
+        RELEASES_URL="https://github.com/alliedmodders/amxmodx/releases"
 
-        if [ "$BUILD" = "latest" ]; then
-          INDEX_URL="https://www.amxmodx.org/amxxdrop/${BRANCH}/"
-          echo "Resolving latest build from ${INDEX_URL} ..."
-          BUILD=$(curl -fsSL "$INDEX_URL" \
-            | grep -o "git[0-9]*-base-linux" \
-            | grep -o "[0-9]*" \
-            | sort -n | tail -1)
-          if [ -z "$BUILD" ]; then
-            echo "::error::Could not resolve latest build from ${INDEX_URL}"
+        if [ "$RELEASE_TAG" = "latest" ]; then
+          echo "Resolving latest AMXX release from GitHub releases ..."
+          RELEASE_TAG=$(curl -fsSL "$RELEASES_URL" \
+            | grep -oE "/alliedmodders/amxmodx/releases/tag/[0-9]+\\.[0-9]+\\.0\\.[0-9]+" \
+            | grep -oE "[0-9]+\\.[0-9]+\\.0\\.[0-9]+" \
+            | sort -t. -k1,1n -k2,2n -k4,4n \
+            | tail -1)
+
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "::error::Could not resolve latest AMXX release from ${RELEASES_URL}"
             exit 1
           fi
         fi
 
+        if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq "^[0-9]+\.[0-9]+\.0\.[0-9]+$"; then
+          echo "::error::Invalid AMXX release tag: ${RELEASE_TAG}"
+          exit 1
+        fi
+
+        BRANCH=$(printf '%s\n' "$RELEASE_TAG" | awk -F. '{ print $1 "." $2 }')
+        BUILD=$(printf '%s\n' "$RELEASE_TAG" | awk -F. '{ print $4 }')
+        echo "Resolved branch: ${BRANCH}"
         echo "Resolved build: ${BUILD}"
-        echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+        echo "Resolved release tag: ${RELEASE_TAG}"
+        echo "release-tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+        echo "asset-branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+        echo "asset-build=${BUILD}" >> "$GITHUB_OUTPUT"
 
     - name: Restore compiler cache
       id: cache
       uses: actions/cache@v4
       with:
-        path: ~/.amxxpawn/${{ inputs.amxx-branch }}-${{ steps.resolve.outputs.build }}
-        key: amxxpawn-${{ inputs.amxx-branch }}-${{ steps.resolve.outputs.build }}-${{ runner.os }}
+        path: ~/.amxxpawn/${{ steps.resolve.outputs.release-tag }}
+        key: amxxpawn-${{ steps.resolve.outputs.release-tag }}-${{ runner.os }}
 
     - name: Download and extract
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        BRANCH="${{ inputs.amxx-branch }}"
-        BUILD="${{ steps.resolve.outputs.build }}"
-        BASE_URL="https://www.amxmodx.org/amxxdrop/${BRANCH}"
-        INSTALL_DIR="$HOME/.amxxpawn/${BRANCH}-${BUILD}"
+        BRANCH="${{ steps.resolve.outputs.asset-branch }}"
+        BUILD="${{ steps.resolve.outputs.asset-build }}"
+        RELEASE_TAG="${{ steps.resolve.outputs.release-tag }}"
+        BASE_URL="https://github.com/alliedmodders/amxmodx/releases/download/${RELEASE_TAG}"
+        INSTALL_DIR="$HOME/.amxxpawn/${RELEASE_TAG}"
 
         mkdir -p "$INSTALL_DIR" "$RUNNER_TEMP/amxxpawn_extract"
 
@@ -100,9 +109,8 @@ runs:
       if: runner.os != 'Windows'
       shell: bash
       run: |
-        BRANCH="${{ inputs.amxx-branch }}"
-        BUILD="${{ steps.resolve.outputs.build }}"
-        INSTALL_DIR="$HOME/.amxxpawn/${BRANCH}-${BUILD}"
+        RELEASE_TAG="${{ steps.resolve.outputs.release-tag }}"
+        INSTALL_DIR="$HOME/.amxxpawn/${RELEASE_TAG}"
 
         # Skip if wrapper already present (restored from cache)
         if [ ! -f "$INSTALL_DIR/amxxpc_orig" ]; then
@@ -120,9 +128,8 @@ runs:
       id: export
       shell: bash
       run: |
-        BRANCH="${{ inputs.amxx-branch }}"
-        BUILD="${{ steps.resolve.outputs.build }}"
-        INSTALL_DIR="$HOME/.amxxpawn/${BRANCH}-${BUILD}"
+        RELEASE_TAG="${{ steps.resolve.outputs.release-tag }}"
+        INSTALL_DIR="$HOME/.amxxpawn/${RELEASE_TAG}"
 
         echo "$INSTALL_DIR"                          >> "$GITHUB_PATH"
         echo "AMXXPAWN_SCRIPTING=$INSTALL_DIR"       >> "$GITHUB_ENV"
@@ -135,7 +142,7 @@ runs:
         echo "scripting-path=$INSTALL_DIR"           >> "$GITHUB_OUTPUT"
         echo "include-path=$INSTALL_DIR/include"     >> "$GITHUB_OUTPUT"
 
-        echo "AMXXPawn ${BRANCH} build ${BUILD} ready at: $INSTALL_DIR"
+        echo "AMXXPawn ${RELEASE_TAG} ready at: $INSTALL_DIR"
 
     - name: Parse plugin version from file
       id: parse-version
